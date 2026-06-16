@@ -1,0 +1,7 @@
+streamlit
+google-generativeai
+kml2geojson
+pyairtable
+folium
+streamlit-folium
+PyPDF2
