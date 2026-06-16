@@ -21,7 +21,7 @@ try:
     AIRTABLE_BASE_ID = st.secrets["AIRTABLE_BASE_ID"]
     AIRTABLE_TABLE_NAME = "Kurum Görüşleri"
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
 except Exception as e:
     st.error("API Anahtarları bulunamadı. Lütfen Streamlit Secrets ayarlarını kontrol edin.")
     st.stop()
