@@ -1,7 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import kml2geojson
-import requests  # pyairtable yerine daha güvenli olan requests'e geçtik
+import requests
 import json
 import os
 import tempfile
@@ -19,6 +19,9 @@ try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     AIRTABLE_TOKEN = st.secrets["AIRTABLE_TOKEN"]
     AIRTABLE_BASE_ID = st.secrets["AIRTABLE_BASE_ID"]
+    
+    # URL veya isim hatalarından kaçınmak için PDF'te görünen Tablo ID'sini doğrudan kullanıyoruz
+    AIRTABLE_TABLE_ID = "tblDF0tm5sCoeMO5p"
     
     genai.configure(api_key=GEMINI_API_KEY)
     
@@ -55,29 +58,29 @@ def metni_analiz_et(metin):
     return json.loads(temiz_metin)
 
 def airtable_kaydet(ai_verisi, kml_var_mi):
-    # Tablo adını URL formatına uygun hale getiriyoruz
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/Kurum%20G%C3%B6r%C3%BC%C5%9Fleri"
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
     headers = {
         "Authorization": f"Bearer {AIRTABLE_TOKEN}",
         "Content-Type": "application/json"
     }
     
+    # Sütun isimleri sizin Airtable tablonuzdaki İNGİLİZCE isimlerle eşleştirildi
     yeni_kayit = {
         "fields": {
-            "Kurum Adı": ai_verisi.get("kurum_adi", ""),
-            "Evrak No": ai_verisi.get("evrak_no", ""),
-            "Görüş Durumu": ai_verisi.get("gorus_durumu", ""),
-            "Yapılaşma Kısıtları": ai_verisi.get("yapilasma_kisitlari", ""),
-            "Mekansal Veri Durumu": kml_var_mi
-        }
+            "Institution Name": str(ai_verisi.get("kurum_adi", "")),
+            "Document Number": str(ai_verisi.get("evrak_no", "")),
+            "Opinion Status": str(ai_verisi.get("gorus_durumu", "")),
+            "Spatial Constraints": str(ai_verisi.get("yapilasma_kisitlari", "")),
+            "Has KML Data": kml_var_mi
+        },
+        "typecast": True # Airtable'ın verileri otomatik formatlamasına izin verir (Hayat kurtarır)
     }
     
     response = requests.post(url, headers=headers, json=yeni_kayit)
     
-    # Airtable'dan gelen gerçek hatayı yakala ve ekrana yansıt
     if response.status_code != 200:
         hata_mesaji = response.json()
-        raise Exception(f"Airtable Hatası: {json.dumps(hata_mesaji, ensure_ascii=False)}")
+        raise Exception(f"Airtable Kayıt Hatası: {json.dumps(hata_mesaji, ensure_ascii=False)}")
     
     return response.json()
 
