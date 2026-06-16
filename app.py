@@ -25,7 +25,10 @@ try:
     genai.configure(api_key=GEMINI_API_KEY)
     
     # ÇÖZÜM: En stabil temel modele geçiyoruz
-    model = genai.GenerativeModel('gemini-pro')
+    # Sistemde kullanılabilir modelleri listele ve ilk text modelini seç
+    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    secilen_model = next((m for m in available_models if 'flash' in m), available_models[0])
+    model = genai.GenerativeModel(secilen_model)
     
 except Exception as e:
     st.error("API Anahtarları bulunamadı. Lütfen Streamlit Secrets ayarlarını kontrol edin.")
