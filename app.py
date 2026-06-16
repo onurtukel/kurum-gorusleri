@@ -1,7 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import kml2geojson
-from pyairtable import Api
+import requests  # pyairtable yerine daha güvenli olan requests'e geçtik
 import json
 import os
 import tempfile
@@ -19,17 +19,13 @@ try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     AIRTABLE_TOKEN = st.secrets["AIRTABLE_TOKEN"]
     AIRTABLE_BASE_ID = st.secrets["AIRTABLE_BASE_ID"]
-    AIRTABLE_TABLE_NAME = "Kurum Görüşleri"
     
-    # API yapılandırması
     genai.configure(api_key=GEMINI_API_KEY)
     
-    # ÇÖZÜM: En stabil temel modele geçiyoruz
-    # Sistemde kullanılabilir modelleri listele ve ilk text modelini seç
+    # Dinamik model seçimi
     available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
     secilen_model = next((m for m in available_models if 'flash' in m), available_models[0])
     model = genai.GenerativeModel(secilen_model)
-    
 except Exception as e:
     st.error("API Anahtarları bulunamadı. Lütfen Streamlit Secrets ayarlarını kontrol edin.")
     st.stop()
@@ -45,35 +41,45 @@ def pdf_metin_cikar(pdf_dosyasi):
 def metni_analiz_et(metin):
     prompt = """
     Aşağıdaki resmi kurum görüşü metnini bir şehir plancısı titizliğiyle analiz et. 
-    Lütfen SADECE aşağıdaki JSON formatında cevap ver. Metin harici markdown veya işaret kullanma:
+    Lütfen SADECE aşağıdaki JSON formatında cevap ver.
     {
       "kurum_adi": "Kurum adı",
       "evrak_no": "Sayı veya evrak numarası",
       "gorus_durumu": "'Olumlu', 'Kısıtlı' veya 'Olumsuz'",
-      "yapilasma_kisitlari": "Kısıtları özetle veya 'Bulunmamaktadır' yaz.",
-      "etkilenen_parseller": ["101/1", "102/5"] 
+      "yapilasma_kisitlari": "Kısıtları özetle veya 'Bulunmamaktadır' yaz."
     }
     Metin: """ + metin
     
-    # ÇÖZÜM: JSON zorlamasını API ayarı yerine Prompt ile yapıyoruz
     response = model.generate_content(prompt)
-    
-    # Gelen yanıttaki olası Markdown fazlalıklarını (```json ... ```) temizle
     temiz_metin = response.text.replace("```json", "").replace("```", "").strip()
     return json.loads(temiz_metin)
 
 def airtable_kaydet(ai_verisi, kml_var_mi):
-    api = Api(AIRTABLE_TOKEN)
-    tablo = api.table(AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME)
-    yeni_kayit = {
-        "Kurum Adı": ai_verisi.get("kurum_adi", ""),
-        "Evrak No": ai_verisi.get("evrak_no", ""),
-        "Görüş Durumu": ai_verisi.get("gorus_durumu", ""),
-        "Yapılaşma Kısıtları": ai_verisi.get("yapilasma_kisitlari", ""),
-        "Etkilenen Parseller (Metin)": ", ".join(ai_verisi.get("etkilenen_parseller", [])),
-        "Mekansal Veri Durumu": kml_var_mi
+    # Tablo adını URL formatına uygun hale getiriyoruz
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/Kurum%20G%C3%B6r%C3%BC%C5%9Fleri"
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_TOKEN}",
+        "Content-Type": "application/json"
     }
-    return tablo.create(yeni_kayit)
+    
+    yeni_kayit = {
+        "fields": {
+            "Kurum Adı": ai_verisi.get("kurum_adi", ""),
+            "Evrak No": ai_verisi.get("evrak_no", ""),
+            "Görüş Durumu": ai_verisi.get("gorus_durumu", ""),
+            "Yapılaşma Kısıtları": ai_verisi.get("yapilasma_kisitlari", ""),
+            "Mekansal Veri Durumu": kml_var_mi
+        }
+    }
+    
+    response = requests.post(url, headers=headers, json=yeni_kayit)
+    
+    # Airtable'dan gelen gerçek hatayı yakala ve ekrana yansıt
+    if response.status_code != 200:
+        hata_mesaji = response.json()
+        raise Exception(f"Airtable Hatası: {json.dumps(hata_mesaji, ensure_ascii=False)}")
+    
+    return response.json()
 
 # --- ARAYÜZ (UI) ---
 col1, col2 = st.columns([1, 1])
@@ -87,7 +93,6 @@ with col1:
 
 with col2:
     st.subheader("📍 Mekansal Görüntüleme")
-    # Haritayı varsayılan olarak Ankara koordinatlarında başlatıyoruz
     m = folium.Map(location=[39.9334, 32.8597], zoom_start=11, tiles="CartoDB positron")
     harita_gosterici = st_folium(m, width=700, height=400, key="bos_harita")
 
@@ -95,40 +100,31 @@ with col2:
 if islem_baslat and yuklenen_pdf:
     with st.spinner("Yapay zeka belgeyi okuyor ve analiz ediyor..."):
         try:
-            # 1. Metin İşleme
             okunan_metin = pdf_metin_cikar(yuklenen_pdf)
             ai_sonuc = metni_analiz_et(okunan_metin)
             
-            # 2. KML İşleme (Varsa)
             geojson_veri = None
             if yuklenen_kml:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".kml") as tmp:
                     tmp.write(yuklenen_kml.getvalue())
                     tmp_yolu = tmp.name
-                # kml2geojson çıktısı bazen iç içe liste dönebilir
                 donusum = kml2geojson.main.convert(tmp_yolu)
                 geojson_veri = donusum[0] if isinstance(donusum, list) else donusum
                 os.unlink(tmp_yolu)
             
-            # 3. Airtable'a Kayıt
+            # Kayıt İşlemi
             airtable_kaydet(ai_sonuc, bool(yuklenen_kml))
-            
-            # --- BAŞARI EKRANI VE SONUÇLAR ---
             st.success("✅ Veriler başarıyla analiz edildi ve Airtable'a kaydedildi!")
-            
-            # Çıktıları Göster
             st.json(ai_sonuc)
             
-            # Haritayı Güncelle (KML varsa)
             if geojson_veri:
                 st.subheader("📍 Kısıt Sınırları (GeoJSON)")
                 m_dolu = folium.Map(location=[39.9334, 32.8597], zoom_start=11, tiles="CartoDB positron")
                 folium.GeoJson(geojson_veri, name="Kurum Kısıt Sınırı").add_to(m_dolu)
-                # Haritayı GeoJSON sınırlarına otomatik odakla
                 m_dolu.fit_bounds(m_dolu.get_bounds())
                 st_folium(m_dolu, width=700, height=400, key="dolu_harita")
                 
         except Exception as e:
-            st.error(f"Bir hata oluştu: {str(e)}")
+            st.error(f"Sistem Hatası: {str(e)}")
 elif islem_baslat and not yuklenen_pdf:
     st.warning("Lütfen analiz için bir kurum yazısı (PDF) yükleyin.")
