@@ -20,8 +20,13 @@ try:
     AIRTABLE_TOKEN = st.secrets["AIRTABLE_TOKEN"]
     AIRTABLE_BASE_ID = st.secrets["AIRTABLE_BASE_ID"]
     AIRTABLE_TABLE_NAME = "Kurum Görüşleri"
+    
+    # API yapılandırması
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
+    
+    # ÇÖZÜM: En stabil temel modele geçiyoruz
+    model = genai.GenerativeModel('gemini-pro')
+    
 except Exception as e:
     st.error("API Anahtarları bulunamadı. Lütfen Streamlit Secrets ayarlarını kontrol edin.")
     st.stop()
@@ -37,7 +42,7 @@ def pdf_metin_cikar(pdf_dosyasi):
 def metni_analiz_et(metin):
     prompt = """
     Aşağıdaki resmi kurum görüşü metnini bir şehir plancısı titizliğiyle analiz et. 
-    SADECE aşağıdaki JSON formatında cevap ver:
+    Lütfen SADECE aşağıdaki JSON formatında cevap ver. Metin harici markdown veya işaret kullanma:
     {
       "kurum_adi": "Kurum adı",
       "evrak_no": "Sayı veya evrak numarası",
@@ -47,17 +52,21 @@ def metni_analiz_et(metin):
     }
     Metin: """ + metin
     
-    response = model.generate_content(prompt, generation_config=genai.GenerationConfig(response_mime_type="application/json"))
-    return json.loads(response.text)
+    # ÇÖZÜM: JSON zorlamasını API ayarı yerine Prompt ile yapıyoruz
+    response = model.generate_content(prompt)
+    
+    # Gelen yanıttaki olası Markdown fazlalıklarını (```json ... ```) temizle
+    temiz_metin = response.text.replace("```json", "").replace("```", "").strip()
+    return json.loads(temiz_metin)
 
 def airtable_kaydet(ai_verisi, kml_var_mi):
     api = Api(AIRTABLE_TOKEN)
     tablo = api.table(AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME)
     yeni_kayit = {
-        "Kurum Adı": ai_verisi.get("kurum_adi"),
-        "Evrak No": ai_verisi.get("evrak_no"),
-        "Görüş Durumu": ai_verisi.get("gorus_durumu"),
-        "Yapılaşma Kısıtları": ai_verisi.get("yapilasma_kisitlari"),
+        "Kurum Adı": ai_verisi.get("kurum_adi", ""),
+        "Evrak No": ai_verisi.get("evrak_no", ""),
+        "Görüş Durumu": ai_verisi.get("gorus_durumu", ""),
+        "Yapılaşma Kısıtları": ai_verisi.get("yapilasma_kisitlari", ""),
         "Etkilenen Parseller (Metin)": ", ".join(ai_verisi.get("etkilenen_parseller", [])),
         "Mekansal Veri Durumu": kml_var_mi
     }
@@ -93,7 +102,9 @@ if islem_baslat and yuklenen_pdf:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".kml") as tmp:
                     tmp.write(yuklenen_kml.getvalue())
                     tmp_yolu = tmp.name
-                geojson_veri = kml2geojson.main.convert(tmp_yolu)[0]
+                # kml2geojson çıktısı bazen iç içe liste dönebilir
+                donusum = kml2geojson.main.convert(tmp_yolu)
+                geojson_veri = donusum[0] if isinstance(donusum, list) else donusum
                 os.unlink(tmp_yolu)
             
             # 3. Airtable'a Kayıt
